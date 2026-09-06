@@ -12,8 +12,8 @@ This is a bandwidth model, not an electromechanical Teletype emulator.
 from __future__ import annotations
 
 import argparse
+import math
 import time
-
 
 DEFAULT_EXAMPLES = [
     ("short prompt", 12),
@@ -26,15 +26,35 @@ DEFAULT_EXAMPLES = [
 
 
 def chars_per_second(baud: float, frame_bits: float) -> float:
-    if baud <= 0 or frame_bits <= 0:
-        raise ValueError("baud and frame bits must be positive")
-    return baud / frame_bits
+    if (
+        not math.isfinite(baud)
+        or not math.isfinite(frame_bits)
+        or baud <= 0
+        or frame_bits <= 0
+    ):
+        raise ValueError("baud and frame bits must be positive finite numbers")
+    rate = baud / frame_bits
+    if not math.isfinite(rate) or rate <= 0:
+        raise ValueError(
+            "baud and frame bits must produce a positive finite character rate"
+        )
+    return rate
 
 
 def transmit_seconds(characters: int, baud: float, frame_bits: float) -> float:
     if characters < 0:
         raise ValueError("characters cannot be negative")
-    return characters / chars_per_second(baud, frame_bits)
+    try:
+        seconds = characters / chars_per_second(baud, frame_bits)
+    except OverflowError as exc:
+        raise ValueError(
+            "characters and rate must produce a finite transmission duration"
+        ) from exc
+    if not math.isfinite(seconds):
+        raise ValueError(
+            "characters and rate must produce a finite transmission duration"
+        )
+    return seconds
 
 
 def format_duration(seconds: float) -> str:
@@ -82,14 +102,26 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.baud <= 0:
-        parser.error("--baud must be positive")
-    if args.frame_bits <= 0:
-        parser.error("--frame-bits must be positive")
+    if not math.isfinite(args.baud) or args.baud <= 0:
+        parser.error("--baud must be a positive finite number")
+    if not math.isfinite(args.frame_bits) or args.frame_bits <= 0:
+        parser.error("--frame-bits must be a positive finite number")
     if args.characters is not None and args.characters < 0:
         parser.error("--characters cannot be negative")
     if args.live and args.text is None:
         parser.error("--live requires --text")
+
+    counts = [count for _, count in DEFAULT_EXAMPLES]
+    if args.characters is not None:
+        counts.append(args.characters)
+    if args.text is not None:
+        counts.append(len(args.text))
+    try:
+        chars_per_second(args.baud, args.frame_bits)
+        for count in counts:
+            transmit_seconds(count, args.baud, args.frame_bits)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     print_examples(args.baud, args.frame_bits)
 
