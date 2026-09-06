@@ -397,6 +397,70 @@ class InternalLinkCheckerTests(unittest.TestCase):
             ["README.md -> images/missing.png (missing)"],
         )
 
+    def test_literal_leading_slash_resolves_from_repository_root(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            nested = root / "docs"
+            nested.mkdir()
+            (root / "README.md").write_text("# Root\n", encoding="utf-8")
+            (nested / "source.md").write_text(
+                "[Repository root](/README.md)\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(check_internal_links(root), [])
+
+    def test_encoded_leading_slash_stays_source_relative(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            nested = root / "docs"
+            nested.mkdir()
+            (root / "README.md").write_text("# Root\n", encoding="utf-8")
+            (nested / "target.md").write_text("# Target\n", encoding="utf-8")
+            (nested / "source.md").write_text(
+                "[Same directory](%2Ftarget.md)\n"
+                "[Parent directory](%2F..%2FREADME.md)\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(check_internal_links(root), [])
+
+    def test_root_and_encoded_paths_cannot_escape_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            root = parent / "repository"
+            nested = root / "docs"
+            nested.mkdir(parents=True)
+            (parent / "outside.md").write_text("# Outside\n", encoding="utf-8")
+            (nested / "source.md").write_text(
+                "[Root traversal](/../outside.md)\n"
+                "[Encoded traversal](%2F..%2F..%2Foutside.md)\n",
+                encoding="utf-8",
+            )
+
+            errors = check_internal_links(root)
+
+            self.assertEqual(len(errors), 2)
+            self.assertTrue(all("escapes repository" in error for error in errors))
+
+    def test_invalid_percent_encoded_paths_are_reported_deterministically(
+        self,
+    ) -> None:
+        markdown = (
+            "[invalid UTF-8](replacement-%FF.md)\n"
+            "[embedded NUL](embedded%00nul.md)\n"
+        )
+
+        self.assertEqual(
+            self.check_text(markdown, ("replacement-\ufffd.md",)),
+            [
+                "README.md -> replacement-%FF.md (invalid path)",
+                "README.md -> embedded%00nul.md (invalid path)",
+            ],
+        )
+
     def test_inline_code_and_escaped_inline_links_are_not_checked(self) -> None:
         markdown = """
 `[code](missing-code.md)`
