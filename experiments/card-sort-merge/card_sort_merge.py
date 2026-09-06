@@ -8,7 +8,16 @@ class Card:
     payload: str
 
 
+def _require_unique_master_keys(master):
+    seen = set()
+    for card in master:
+        if card.key in seen:
+            raise ValueError("master keys must be unique")
+        seen.add(card.key)
+
+
 def linear_lookup(master, transactions):
+    _require_unique_master_keys(master)
     comparisons = 0
     matches = []
     for tx in transactions:
@@ -21,26 +30,33 @@ def linear_lookup(master, transactions):
 
 
 def merge_join(master, transactions):
+    """Reconcile transactions against a unique-key master stream."""
+    _require_unique_master_keys(master)
     a = sorted(master)
     b = sorted(transactions)
     i = j = comparisons = 0
     matches = []
     only_a = []
     only_b = []
+    master_matched = False
 
     while i < len(a) and j < len(b):
         comparisons += 1
         if a[i].key == b[j].key:
             matches.append((a[i], b[j]))
-            i += 1
             j += 1
+            master_matched = True
         elif a[i].key < b[j].key:
-            only_a.append(a[i])
+            if not master_matched:
+                only_a.append(a[i])
             i += 1
+            master_matched = False
         else:
             only_b.append(b[j])
             j += 1
 
+    if master_matched:
+        i += 1
     only_a.extend(a[i:])
     only_b.extend(b[j:])
     return comparisons, matches, only_a, only_b

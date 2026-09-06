@@ -9,6 +9,10 @@ Historical question:
 1. repeatedly search an unordered master deck for each transaction;
 2. sort both streams by key, then advance through them with a merge-style comparison.
 
+The model assumes one master card per key. A transaction deck may contain
+several cards for the same key; after sorting, the merge keeps the matching
+master card at the read station until that adjacent transaction group ends.
+
 Run:
 
 ```bash
