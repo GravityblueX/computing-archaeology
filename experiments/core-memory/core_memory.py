@@ -9,6 +9,28 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from typing import Literal
+
+
+ReadPhase = Literal["SELECT", "READ_CLEAR", "RESTORE_WRITE", "RESTORE_SKIP", "COMPLETE"]
+RestoreAction = Literal["pending", "write-one", "disabled", "already-zero"]
+
+
+@dataclass(frozen=True)
+class ReadStep:
+    """Copied state at a conceptual read stage, not a measured hardware phase."""
+
+    phase: ReadPhase
+    row: int
+    col: int
+    bits: tuple[tuple[int, ...], ...]
+    observed_bit: int | None
+    sense_pulse: bool | None
+    restore_action: RestoreAction
+
+    @property
+    def core_bit(self) -> int:
+        return self.bits[self.row][self.col]
 
 
 @dataclass
@@ -18,6 +40,7 @@ class ReadResult:
     observed_bit: int
     sense_pulse: bool
     restored: bool
+    trace: tuple[ReadStep, ...] = ()
 
 
 class CorePlane:
@@ -58,19 +81,55 @@ class CorePlane:
             result.append(line)
         return result
 
-    def destructive_read(self, row: int, col: int, restore: bool = True) -> ReadResult:
-        """Force selected bit to 0 and infer prior value from whether it changed."""
+    def destructive_read(
+        self, row: int, col: int, restore: bool = True, *, trace: bool = False
+    ) -> ReadResult:
+        """Force a bit to 0; optionally retain snapshots of this same read cycle.
+
+        Clearing and sensing form one conceptual stage. The stored bit can be
+        zero while the recovered logical value is one; restoration uses the
+        recovered value, not a second read of the now-cleared core.
+        """
         self._check(row, col)
+        steps: list[ReadStep] | None = [] if trace else None
+
+        def record(
+            phase: ReadPhase,
+            observed: int | None,
+            sensed: bool | None,
+            action: RestoreAction,
+        ) -> None:
+            if steps is not None:
+                steps.append(ReadStep(
+                    phase=phase,
+                    row=row,
+                    col=col,
+                    bits=tuple(tuple(line) for line in self.bits),
+                    observed_bit=observed,
+                    sense_pulse=sensed,
+                    restore_action=action,
+                ))
+
+        record("SELECT", None, None, "pending")
         old = self.bits[row][col]
         sense_pulse = old == 1
 
         # Conceptual read: forcing the target toward zero destroys a stored one.
         self.bits[row][col] = 0
+        record("READ_CLEAR", old, sense_pulse, "pending")
 
         restored = False
+        restore_action: RestoreAction
         if restore and old == 1:
             self.bits[row][col] = 1
             restored = True
+            restore_action = "write-one"
+            record("RESTORE_WRITE", old, sense_pulse, restore_action)
+        else:
+            restore_action = "already-zero" if restore else "disabled"
+            record("RESTORE_SKIP", old, sense_pulse, restore_action)
+
+        record("COMPLETE", old, sense_pulse, restore_action)
 
         return ReadResult(
             row=row,
@@ -78,6 +137,7 @@ class CorePlane:
             observed_bit=old,
             sense_pulse=sense_pulse,
             restored=restored,
+            trace=tuple(steps) if steps is not None else (),
         )
 
     def render(self) -> str:
@@ -86,6 +146,19 @@ class CorePlane:
 
 def render_selection(selection: list[list[float]]) -> str:
     return "\n".join(" ".join(f"{value:.1f}" for value in row) for row in selection)
+
+
+def render_read_trace(trace: tuple[ReadStep, ...]) -> str:
+    lines = ["Conceptual read trace (snapshots, not measured timing)"]
+    for index, step in enumerate(trace, 1):
+        observed = "?" if step.observed_bit is None else str(step.observed_bit)
+        sensed = "?" if step.sense_pulse is None else str(step.sense_pulse)
+        lines.append(
+            f"{index}. {step.phase} selected={step.core_bit} "
+            f"observed={observed} sense={sensed} restore={step.restore_action}"
+        )
+        lines.extend(" ".join(str(bit) for bit in row) for row in step.bits)
+    return "\n".join(lines)
 
 
 def main() -> None:
@@ -99,6 +172,11 @@ def main() -> None:
         "--no-restore",
         action="store_true",
         help="leave a destructive read cleared instead of restoring a stored 1",
+    )
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="show conceptual read/clear/restore snapshots, not physical timing",
     )
     args = parser.parse_args()
 
@@ -116,13 +194,19 @@ def main() -> None:
     print()
 
     before = plane.bits[args.row][args.col]
-    result = plane.destructive_read(args.row, args.col, restore=not args.no_restore)
+    result = plane.destructive_read(
+        args.row, args.col, restore=not args.no_restore, trace=args.trace
+    )
 
     print(f"Bit before read: {before}")
     print(f"Sense pulse observed: {result.sense_pulse}")
     print(f"Recovered logical value: {result.observed_bit}")
     print(f"Restored after read: {result.restored}")
     print()
+
+    if args.trace:
+        print(render_read_trace(result.trace))
+        print()
 
     print("Plane after read sequence")
     print(plane.render())
