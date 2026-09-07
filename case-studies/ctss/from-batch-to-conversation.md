@@ -378,7 +378,7 @@ The operating system starts to look less like a loader and more like an institut
 
 ## Reconstruction: why slow humans create multiplexing opportunity
 
-The companion experiment [`../../experiments/time-sharing/`](../../experiments/time-sharing/) models a deliberately simple situation. To approximate intermittent interaction, each user's request stream emits requests at a fixed start-to-start interval, and each request demands a short CPU burst:
+The companion experiment [`../../experiments/time-sharing/`](../../experiments/time-sharing/) models a deliberately simple situation. By default, to approximate intermittent interaction, each user's request stream emits requests at a fixed start-to-start interval, and each request demands a short CPU burst:
 
 ```text
 fixed request-start interval -> next request arrival
@@ -391,7 +391,21 @@ The script compares:
 - aggregating many users on one CPU;
 - simple response-time behavior as the user population grows.
 
-This is an open-loop model: a scheduled request does not wait for the previous response before arriving. It does not reproduce CTSS scheduling or a closed-loop cycle in which a person pauses only after seeing a response.
+This default is an open-loop model: a scheduled request does not wait for the previous response before arriving. The legacy `--think` option retains that meaning.
+
+The opt-in `--pause` mode instead closes the interaction loop:
+
+```text
+submit -> wait for response -> pause -> submit again
+```
+
+Each user has at most one outstanding request. The next arrival occurs at the previous completion plus the specified pause, so slower responses postpone later demand. The two modes share the same initial arrival vector when the positive interval and pause are equal. For example:
+
+```bash
+python experiments/time-sharing/time_sharing.py --users 2 --rounds 2 --pause 1 --cpu 1 --quantum 0.5 --trace
+```
+
+This synthetic run completes four requests with a mean response of 1.5 seconds and a makespan of 4.5 seconds. With `--think 1` in place of `--pause 1 --trace`, the same initial arrivals yield 2.125 seconds and 4 seconds respectively. The experiment README gives the complete trace and event-ordering rules. Statistics include startup and final drain, exclude any pause after the final response, and are not steady-state estimates. Neither mode reproduces CTSS scheduling, measured user behavior, or historical capacity.
 
 Its purpose is to expose the economic intuition:
 

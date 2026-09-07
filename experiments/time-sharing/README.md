@@ -7,8 +7,9 @@ Historical question:
 The key asymmetry is that human interaction is bursty.
 
 A user may pause for seconds between interactions and then demand only a short
-burst of CPU time. This toy model approximates those pauses with fixed-rate,
-open-loop request arrivals.
+burst of CPU time. The default toy model approximates those pauses with fixed-rate,
+open-loop request arrivals. An opt-in closed-loop mode lets each user wait for a
+response before beginning their next pause.
 
 ## What the script models
 
@@ -51,8 +52,8 @@ CPU seconds per request / seconds between requests
 
 Aggregate offered load multiplies that ratio by the user count. Because this is
 an open-loop simplification, requests remain on schedule even if an earlier
-request is still queued. A closed-loop model of a person pausing only after
-seeing a response would require a different arrival generator.
+request is still queued. The separate `--pause` mode below instead generates
+each successor only after that user's response completes.
 
 ## Run
 
@@ -77,6 +78,88 @@ python experiments/time-sharing/time_sharing.py \
 ```
 
 Watch the system cross from spare capacity into queueing pressure.
+
+## Close the interaction loop
+
+With `--pause`, each user has at most one outstanding request:
+
+```text
+submit -> queue and receive CPU service -> response -> pause -> submit again
+```
+
+`--pause SECONDS` means a delay **after completion**, not the legacy `--think`
+start-to-start interval. The two flags are mutually exclusive. `--pause 0` is
+valid: a user resubmits immediately after completion; `--think 0` remains invalid.
+Omitting both keeps the original open-loop model and its default output.
+
+Compare the two arrival rules with identical initial arrivals and CPU demand:
+
+```bash
+python experiments/time-sharing/time_sharing.py --users 2 --rounds 2 --think 1 --cpu 1 --quantum 0.5
+python experiments/time-sharing/time_sharing.py --users 2 --rounds 2 --pause 1 --cpu 1 --quantum 0.5 --trace
+```
+
+User A initially arrives at 0 seconds and user B at 0.5 seconds in both runs.
+The closed-loop completion trace is:
+
+| Request | Arrival (s) | Completion (s) | Response (s) |
+| --- | ---: | ---: | ---: |
+| A0 | 0 | 1.5 | 1.5 |
+| B0 | 0.5 | 2 | 1.5 |
+| A1 | 2.5 | 4 | 1.5 |
+| B1 | 3 | 4.5 | 1.5 |
+
+A1 arrives one second after A0 completes. In the open-loop run it arrives at
+1 second, while A0 is still unfinished. The resulting finite-run measurements:
+
+| Metric | Fixed starts (`--think 1`) | After-response pause (`--pause 1`) |
+| --- | ---: | ---: |
+| Completed requests | 4 | 4 |
+| Mean response (s) | 2.125 | 1.5 |
+| Maximum response (s) | 2.5 | 1.5 |
+| Makespan (s) | 4 | 4.5 |
+| CPU service (s) | 4 | 4 |
+| Utilization | 100% | 88.889% |
+
+The closed loop postpones new demand when responses slow down. In this example,
+it also leaves an idle gap; the lower response time is not a claim of universally
+better performance. These are different workloads, not two scheduling policies.
+
+### Reproducible event and measurement rules
+
+- The first arrival is `user * (pause / users)`, with zero-based user IDs. This
+  one-time synthetic phase matches the default generator's initial vector when
+  its interval equals a positive pause. At zero pause everyone starts at zero,
+  ordered by user ID.
+- Subsequent arrival is that user's previous completion plus pause. Each user
+  completes exactly `--rounds` requests; there is no pause after the final one.
+- The CPU uses a FIFO ready queue and runs at most one quantum per dispatch.
+  Due arrivals enter before an unfinished request is requeued; a zero-pause
+  successor joins behind arrivals already due at the completion boundary.
+  Arrivals during a slice do not interrupt it. Timestamp ties use user/request
+  order, and existing ready requests retain their position.
+- Response time is completion minus arrival, excluding the pause. All metrics
+  cover time zero through the final completion, including startup and drain.
+  Utilization is CPU service divided by that makespan. These are not warmed-up
+  steady-state measurements; neither the open-loop offered-load formula nor
+  `users / (pause + mean response)` is an exact finite-run throughput here.
+- `--trace` requires `--pause` and prints completions in completion order with
+  zero-based user/request IDs. It changes no scheduling decisions. The Python
+  `simulate_closed_loop(..., trace=True)` API additionally returns service
+  slices; completions are always available in `ClosedLoopResult`.
+
+Counts must be positive integers. CPU demand and quantum must be positive finite
+numbers; pause must be finite and nonnegative. The new engine does not use an
+absolute epsilon to admit future arrivals or discard remaining CPU demand.
+Floating-point roundoff still applies. Unrepresentable initial spacing,
+nonadvancing time/service increments, and time overflow raise `ValueError`
+(a usage error in the CLI); rescale such workloads. Very many users, rounds, or
+tiny quanta can still require substantial memory or runtime, especially with
+slice tracing. This numerical policy applies to the new closed-loop API, not
+an overhaul of the existing open-loop simulator.
+
+All timings and round-robin rules here are synthetic, not CTSS measurements,
+its scheduling algorithm, or evidence of historical designers' intentions.
 
 ## Why this is historically useful
 
