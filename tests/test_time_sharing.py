@@ -257,6 +257,17 @@ class ClosedLoopTimeSharingTests(unittest.TestCase):
         self.assertAlmostEqual(result.metrics.mean_response, 29 / 6)
         self.assertAlmostEqual(result.metrics.max_response, 16 / 3)
 
+    def test_peak_outstanding_distinguishes_handoff_from_actual_overlap(self):
+        for rounds in (1, 3):
+            with self.subTest(rounds=rounds):
+                handoff = self.simulate(rounds=rounds, pause=2, quantum=1, trace=True)
+                self.assertEqual(handoff.peak_outstanding, 1)
+                self.assertEqual(handoff.metrics.max_response, 1)
+        overlapping = self.simulate(rounds=1, pause=1, quantum=1, trace=True)
+        self.assertEqual(overlapping.peak_outstanding, 2)
+        self.assertEqual(overlapping.completions[0].completion, 1)
+        self.assertEqual(overlapping.completions[1].arrival, 0.5)
+
     def test_tiny_time_units_do_not_erase_positive_service_or_admit_early(self):
         scale = 2.0 ** -44
         result = self.simulate(pause=scale, cpu=scale, quantum=scale / 2, trace=True)
@@ -284,6 +295,16 @@ class ClosedLoopTimeSharingTests(unittest.TestCase):
                 self.assertTrue(all(0 < s.cpu <= 0.1 for s in service))
         for left, right in zip(result.slices, result.slices[1:]):
             self.assertLessEqual(left.end, right.start)
+
+    def test_decimal_quanta_do_not_create_spurious_leftover_service(self):
+        for users, cpu, quantum, count in ((1, 0.2, 0.05, 4), (2, 0.2, 0.05, 8), (2, 1, 0.1, 20)):
+            with self.subTest(users=users, cpu=cpu, quantum=quantum):
+                result = self.simulate(users=users, rounds=1, pause=0, cpu=cpu, quantum=quantum, trace=True)
+                self.assertEqual(result.metrics.completed, users)
+                self.assertEqual(len(result.slices), count)
+                self.assertAlmostEqual(result.busy_time, users * cpu)
+                for user in range(users):
+                    self.assertEqual(math.fsum(s.cpu for s in result.slices if s.user == user), cpu)
 
     def test_trace_is_observational_and_calls_do_not_share_state(self):
         plain = self.simulate()

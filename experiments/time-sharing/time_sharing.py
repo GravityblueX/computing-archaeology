@@ -13,6 +13,7 @@ import heapq
 import math
 from collections import deque
 from dataclasses import dataclass
+from fractions import Fraction
 from statistics import mean
 
 
@@ -203,7 +204,8 @@ def simulate_closed_loop(
     Statistics cover time zero through the last completion, not steady state.
 
     Counts must be positive integers; pause may be zero, CPU/quantum may not.
-    Floating-point roundoff remains possible, but no absolute epsilon admits
+    CPU demand is subtracted as exact fractions of the input floats; event
+    clocks still have floating-point roundoff. No absolute epsilon admits
     future work or discards remaining service. Nonfinite or nonadvancing time
     and service arithmetic raises ValueError rather than returning false data.
     Trace only controls slice recording, never scheduling or completions.
@@ -230,18 +232,22 @@ def simulate_closed_loop(
         pending.append(Request(first, user, 0, cpu_burst))
         previous = first
     heapq.heapify(pending)
-    ready: deque[tuple[Request, float]] = deque()
+    demand = Fraction.from_float(cpu_burst)
+    slice_limit = Fraction.from_float(quantum)
+    ready: deque[tuple[Request, Fraction]] = deque()
     active: set[int] = set()
     completions: list[CompletedRequest] = []
     slices: list[ServiceSlice] = []
     peak_outstanding = 0
     now = busy = 0.0
 
-    def admit_arrivals() -> None:
+    def admit_arrivals(*, inclusive: bool = True) -> None:
         nonlocal peak_outstanding
-        while pending and pending[0].arrival <= now:
+        while pending and (
+            pending[0].arrival < now or (inclusive and pending[0].arrival == now)
+        ):
             request = heapq.heappop(pending)
-            ready.append((request, request.cpu))
+            ready.append((request, demand))
             active.add(request.user)
         peak_outstanding = max(peak_outstanding, len(active))
 
@@ -250,28 +256,34 @@ def simulate_closed_loop(
             now = max(now, pending[0].arrival)
         admit_arrivals()
         request, remaining = ready.popleft()
-        exhausted = remaining <= quantum
-        run = remaining if exhausted else quantum
-        left = 0.0 if exhausted else remaining - run
-        if not exhausted and left >= remaining:
+        exhausted = remaining <= slice_limit
+        service = remaining if exhausted else slice_limit
+        left = remaining - service
+        if not exhausted and float(left) >= float(remaining):
             raise ValueError("remaining service decrement is not representable")
+        run = float(service)
         start = now
         now = _advance_closed_loop_time(now, run)
         busy = _advance_closed_loop_time(busy, run)
         if trace:
             slices.append(ServiceSlice(request.user, request.sequence, start, now, run))
-        admit_arrivals()
         if exhausted:
+            # Arrivals inside the slice overlap this request. At the exact
+            # completion boundary it is no longer outstanding: count that
+            # handoff without inventing a transient extra active user.
+            admit_arrivals(inclusive=False)
             completions.append(CompletedRequest(
                 request.user, request.sequence, request.arrival, now, request.cpu
             ))
             active.remove(request.user)
+            admit_arrivals()
             if request.sequence + 1 < rounds:
                 arrival = _advance_closed_loop_time(now, pause) if pause else now
                 heapq.heappush(pending, Request(
                     arrival, request.user, request.sequence + 1, cpu_burst
                 ))
         else:
+            admit_arrivals()
             ready.append((request, left))
 
     responses = [request.completion - request.arrival for request in completions]

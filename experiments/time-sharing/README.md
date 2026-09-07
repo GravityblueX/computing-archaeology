@@ -143,6 +143,8 @@ better performance. These are different workloads, not two scheduling policies.
   Utilization is CPU service divided by that makespan. These are not warmed-up
   steady-state measurements; neither the open-loop offered-load formula nor
   `users / (pause + mean response)` is an exact finite-run throughput here.
+  Peak outstanding counts requests from arrival up to, but not including,
+  completion; an exact completion/arrival handoff is not an overlap.
 - `--trace` requires `--pause` and prints completions in completion order with
   zero-based user/request IDs. It changes no scheduling decisions. The Python
   `simulate_closed_loop(..., trace=True)` API additionally returns service
@@ -151,7 +153,10 @@ better performance. These are different workloads, not two scheduling policies.
 Counts must be positive integers. CPU demand and quantum must be positive finite
 numbers; pause must be finite and nonnegative. The new engine does not use an
 absolute epsilon to admit future arrivals or discard remaining CPU demand.
-Floating-point roundoff still applies. Unrepresentable initial spacing,
+CPU demand is subtracted as exact fractions of the input binary floats so
+repeated subtraction does not invent a tiny extra slice (for example, four
+0.05-second slices satisfy a 0.2-second request). Clocks and reported slices
+remain floats, so roundoff still applies. Unrepresentable initial spacing,
 nonadvancing time/service increments, and time overflow raise `ValueError`
 (a usage error in the CLI); rescale such workloads. Very many users, rounds, or
 tiny quanta can still require substantial memory or runtime, especially with
